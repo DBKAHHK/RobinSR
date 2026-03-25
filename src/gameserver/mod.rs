@@ -49,6 +49,7 @@ struct HandledCmds {
 struct CmdTable {
     handled: HandledCmds,
     dummy_map: HashMap<u16, u16>,
+    name_by_id: HashMap<u16, String>,
 }
 
 #[derive(Clone)]
@@ -148,6 +149,12 @@ async fn handle_packet(state: &GameServerState, conn: &mut Connection, pkt: Pack
             if let Some(rsp_cmd) = state.cmd.dummy_map.get(&pkt.cmd) {
                 conn.send_empty(*rsp_cmd).await
             } else {
+                let name = state
+                    .cmd
+                    .name_by_id
+                    .get(&pkt.cmd)
+                    .map_or("UNKNOWN", String::as_str);
+                println!("unhandled cmd: {} ({})", pkt.cmd, name);
                 Ok(())
             }
         }
@@ -183,10 +190,10 @@ fn build_cmd_table() -> CmdTable {
 
     let mut dummy_map: HashMap<u16, u16> = HashMap::new();
     for (name, req_id) in &name_to_id {
-        if let Some(base) = name.strip_suffix("CsReq") {
-            let rsp_name = format!("{base}ScRsp");
+        for rsp_name in rsp_candidates(name) {
             if let Some(rsp_id) = name_to_id.get(&rsp_name) {
                 dummy_map.insert(*req_id, *rsp_id);
+                break;
             }
         }
     }
@@ -238,13 +245,36 @@ fn build_cmd_table() -> CmdTable {
         dummy_map.remove(&handled);
     }
 
-    CmdTable { handled, dummy_map }
+    let name_by_id = name_to_id
+        .iter()
+        .map(|(name, id)| (*id, name.clone()))
+        .collect();
+
+    CmdTable {
+        handled,
+        dummy_map,
+        name_by_id,
+    }
 }
 
 fn cmd_id(name_to_id: &HashMap<String, u16>, name: &str) -> u16 {
     *name_to_id
         .get(name)
         .unwrap_or_else(|| panic!("missing cmd id: {name}"))
+}
+
+fn rsp_candidates(name: &str) -> Vec<String> {
+    let mut out = Vec::with_capacity(3);
+    if let Some(base) = name.strip_suffix("CsReq") {
+        out.push(format!("{base}ScRsp"));
+    }
+    if let Some(base) = name.strip_suffix("CSReq") {
+        out.push(format!("{base}ScRsp"));
+    }
+    if let Some(base) = name.strip_suffix("Req") {
+        out.push(format!("{base}ScRsp"));
+    }
+    out
 }
 
 fn now_ms() -> u64 {
