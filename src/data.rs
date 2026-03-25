@@ -10,6 +10,7 @@ pub struct GameData {
     pub avatars: Vec<AvatarRecord>,
     pub lightcones: Vec<LightconeRecord>,
     pub relics: Vec<RelicRecord>,
+    pub battle: BattleConfigRecord,
     pub mc_id: u32,
     pub march_id: u32,
     pub lineup: Vec<u32>,
@@ -22,6 +23,8 @@ pub struct AvatarRecord {
     pub promotion: u32,
     pub rank: u32,
     pub enhanced_id: u32,
+    pub sp_value: u32,
+    pub sp_max: u32,
     pub skills_by_anchor_type: Vec<(u32, u32)>,
 }
 
@@ -52,6 +55,29 @@ pub struct RelicSubAffixRecord {
     pub step: u32,
 }
 
+#[derive(Debug, Clone)]
+pub struct BattleConfigRecord {
+    pub battle_type: String,
+    pub stage_id: u32,
+    pub cycle_count: u32,
+    pub path_resonance_id: u32,
+    pub monsters: Vec<Vec<BattleMonsterRecord>>,
+    pub blessings: Vec<BattleBlessingRecord>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BattleMonsterRecord {
+    pub monster_id: u32,
+    pub amount: u32,
+    pub level: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct BattleBlessingRecord {
+    pub id: u32,
+    pub level: u32,
+}
+
 #[derive(Debug, Deserialize)]
 struct FreeSrData {
     key: Option<String>,
@@ -60,6 +86,8 @@ struct FreeSrData {
     lightcones: Vec<LightconeEntry>,
     #[serde(default)]
     relics: Vec<RelicEntry>,
+    #[serde(default)]
+    battle_config: BattleConfigEntry,
 }
 
 #[derive(Debug, Deserialize)]
@@ -68,6 +96,8 @@ struct AvatarEntry {
     level: u32,
     promotion: u32,
     enhanced_id: Option<u32>,
+    sp_value: Option<u32>,
+    sp_max: Option<u32>,
     data: Option<AvatarInnerData>,
 }
 
@@ -104,6 +134,46 @@ struct RelicSubAffixEntry {
     sub_affix_id: u32,
     count: u32,
     step: u32,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct BattleConfigEntry {
+    #[serde(default)]
+    battle_type: String,
+    #[serde(default)]
+    cycle_count: u32,
+    #[serde(default)]
+    stage_id: u32,
+    #[serde(default)]
+    path_resonance_id: u32,
+    #[serde(default)]
+    monsters: Vec<Vec<BattleMonsterEntry>>,
+    #[serde(default)]
+    blessings: Vec<BattleBlessingEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BattleMonsterEntry {
+    monster_id: u32,
+    #[serde(default = "default_monster_amount")]
+    amount: u32,
+    #[serde(default)]
+    level: u32,
+}
+
+#[derive(Debug, Deserialize)]
+struct BattleBlessingEntry {
+    id: u32,
+    #[serde(default = "default_blessing_level")]
+    level: u32,
+}
+
+fn default_blessing_level() -> u32 {
+    1
+}
+
+fn default_monster_amount() -> u32 {
+    1
 }
 
 #[derive(Debug, Deserialize)]
@@ -147,6 +217,8 @@ pub fn load_data(freesr_path: &str, persistent_path: &str) -> io::Result<GameDat
             promotion: v.promotion,
             rank: inner.and_then(|d| d.rank).unwrap_or(1),
             enhanced_id: v.enhanced_id.unwrap_or(0),
+            sp_value: v.sp_value.unwrap_or(0),
+            sp_max: v.sp_max.unwrap_or(10_000),
             skills_by_anchor_type: skills,
         });
     }
@@ -186,6 +258,36 @@ pub fn load_data(freesr_path: &str, persistent_path: &str) -> io::Result<GameDat
         })
         .collect();
 
+    let battle = BattleConfigRecord {
+        battle_type: freesr.battle_config.battle_type,
+        stage_id: freesr.battle_config.stage_id,
+        cycle_count: freesr.battle_config.cycle_count,
+        path_resonance_id: freesr.battle_config.path_resonance_id,
+        monsters: freesr
+            .battle_config
+            .monsters
+            .into_iter()
+            .map(|wave| {
+                wave.into_iter()
+                    .map(|m| BattleMonsterRecord {
+                        monster_id: m.monster_id,
+                        amount: m.amount.max(1),
+                        level: m.level,
+                    })
+                    .collect()
+            })
+            .collect(),
+        blessings: freesr
+            .battle_config
+            .blessings
+            .into_iter()
+            .map(|b| BattleBlessingRecord {
+                id: b.id,
+                level: b.level,
+            })
+            .collect(),
+    };
+
     let mc_id = persistent.avatar.mc_id.parse::<u32>().map_err(|e| {
         io::Error::new(io::ErrorKind::InvalidData, format!("persistent.avatar.mc_id: {e}"))
     })?;
@@ -200,6 +302,7 @@ pub fn load_data(freesr_path: &str, persistent_path: &str) -> io::Result<GameDat
         avatars,
         lightcones,
         relics,
+        battle,
         mc_id,
         march_id,
         lineup: persistent.avatar.lineup,

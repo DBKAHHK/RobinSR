@@ -10,7 +10,7 @@ use crate::{
     },
 };
 
-use super::{now_ms, GameServerState};
+use super::{now_ms, persist_runtime, GameServerState};
 
 const MULTI_PATH_IDS: &[u32] = &[
     0, 1001, 1224, 8001, 8002, 8003, 8004, 8005, 8006, 8007, 8008, 8009, 8010,
@@ -77,6 +77,9 @@ pub fn on_set_avatar_path(state: &GameServerState, body: &[u8]) -> SetAvatarPath
             } else if is_march_avatar(avatar_id) {
                 guard.march_id = avatar_id;
             }
+        }
+        if let Err(e) = persist_runtime(state) {
+            eprintln!("failed to persist runtime after set avatar path: {e}");
         }
     }
 

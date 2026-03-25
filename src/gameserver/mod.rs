@@ -1,6 +1,7 @@
 use std::{collections::HashMap, io, sync::Arc};
 
 use prost::Message;
+use serde_json::json;
 use tokio::net::TcpListener;
 
 use crate::{data::GameData, packet::{Connection, Packet}, proto::{self, PlayerLoginFinishScRsp}};
@@ -38,6 +39,7 @@ struct HandledCmds {
     get_cur_lineup_data_sc_rsp: u16,
     change_lineup_leader_cs_req: u16,
     change_lineup_leader_sc_rsp: u16,
+    sync_lineup_notify: u16,
     get_cur_scene_info_cs_req: u16,
     get_cur_scene_info_sc_rsp: u16,
     get_mission_status_cs_req: u16,
@@ -48,6 +50,12 @@ struct HandledCmds {
     start_cocoon_stage_sc_rsp: u16,
     pve_battle_result_cs_req: u16,
     pve_battle_result_sc_rsp: u16,
+    scene_cast_skill_cs_req: u16,
+    scene_cast_skill_sc_rsp: u16,
+    scene_cast_skill_cost_mp_cs_req: u16,
+    scene_cast_skill_cost_mp_sc_rsp: u16,
+    sync_client_res_version_cs_req: u16,
+    sync_client_res_version_sc_rsp: u16,
     get_bag_cs_req: u16,
     get_bag_sc_rsp: u16,
     player_logout_cs_req: u16,
@@ -75,6 +83,11 @@ struct RuntimeState {
     lineup: Vec<u32>,
     leader_slot: u32,
     client_paused: bool,
+    on_battle: bool,
+    current_battle_info: Option<proto::SceneBattleInfo>,
+    last_battle_end_status: i32,
+    next_battle_id: u32,
+    last_world_level: u32,
 }
 
 #[derive(Clone)]
@@ -96,6 +109,11 @@ pub async fn start(data: Arc<GameData>) -> io::Result<()> {
         },
         leader_slot: 0,
         client_paused: false,
+        on_battle: false,
+        current_battle_info: None,
+        last_battle_end_status: proto::BattleEndStatus::BattleEndQuit as i32,
+        next_battle_id: 1,
+        last_world_level: 6,
     }));
     let state = GameServerState {
         data,
@@ -157,7 +175,7 @@ async fn handle_packet(state: &GameServerState, conn: &mut Connection, pkt: Pack
             send_logged(state, conn, h.get_avatar_data_sc_rsp, encode_msg(&rsp)).await
         }
         cmd if cmd == h.get_cur_battle_info_cs_req => {
-            let rsp = battle::on_get_cur_battle_info();
+            let rsp = battle::on_get_cur_battle_info(state);
             send_logged(state, conn, h.get_cur_battle_info_sc_rsp, encode_msg(&rsp)).await
         }
         cmd if cmd == h.get_all_lineup_data_cs_req => {
@@ -170,7 +188,9 @@ async fn handle_packet(state: &GameServerState, conn: &mut Connection, pkt: Pack
         }
         cmd if cmd == h.change_lineup_leader_cs_req => {
             let rsp = lineup::on_change_lineup_leader(state, &pkt.body);
-            send_logged(state, conn, h.change_lineup_leader_sc_rsp, encode_msg(&rsp)).await
+            send_logged(state, conn, h.change_lineup_leader_sc_rsp, encode_msg(&rsp)).await?;
+            let notify = lineup::build_sync_lineup_notify(state);
+            send_logged(state, conn, h.sync_lineup_notify, encode_msg(&notify)).await
         }
         cmd if cmd == h.get_cur_scene_info_cs_req => {
             let rsp = scene::on_get_cur_scene_info(state);
@@ -185,12 +205,24 @@ async fn handle_packet(state: &GameServerState, conn: &mut Connection, pkt: Pack
             send_logged(state, conn, h.content_package_get_data_sc_rsp, encode_msg(&rsp)).await
         }
         cmd if cmd == h.start_cocoon_stage_cs_req => {
-            let rsp = battle::on_start_cocoon_stage(&pkt.body);
+            let rsp = battle::on_start_cocoon_stage(state, &pkt.body);
             send_logged(state, conn, h.start_cocoon_stage_sc_rsp, encode_msg(&rsp)).await
         }
         cmd if cmd == h.pve_battle_result_cs_req => {
-            let rsp = battle::on_pve_battle_result(&pkt.body);
+            let rsp = battle::on_pve_battle_result(state, &pkt.body);
             send_logged(state, conn, h.pve_battle_result_sc_rsp, encode_msg(&rsp)).await
+        }
+        cmd if cmd == h.scene_cast_skill_cs_req => {
+            let rsp = battle::on_scene_cast_skill(state, &pkt.body);
+            send_logged(state, conn, h.scene_cast_skill_sc_rsp, encode_msg(&rsp)).await
+        }
+        cmd if cmd == h.scene_cast_skill_cost_mp_cs_req => {
+            let rsp = battle::on_scene_cast_skill_cost_mp(&pkt.body);
+            send_logged(state, conn, h.scene_cast_skill_cost_mp_sc_rsp, encode_msg(&rsp)).await
+        }
+        cmd if cmd == h.sync_client_res_version_cs_req => {
+            let rsp = battle::on_sync_client_res_version(&pkt.body);
+            send_logged(state, conn, h.sync_client_res_version_sc_rsp, encode_msg(&rsp)).await
         }
         cmd if cmd == h.get_bag_cs_req => {
             let rsp = item::on_get_bag(state);
@@ -206,7 +238,9 @@ async fn handle_packet(state: &GameServerState, conn: &mut Connection, pkt: Pack
         }
         cmd if cmd == h.replace_lineup_cs_req => {
             let rsp = lineup::on_replace_lineup(state, &pkt.body);
-            send_logged(state, conn, h.replace_lineup_sc_rsp, encode_msg(&rsp)).await
+            send_logged(state, conn, h.replace_lineup_sc_rsp, encode_msg(&rsp)).await?;
+            let notify = lineup::build_sync_lineup_notify(state);
+            send_logged(state, conn, h.sync_lineup_notify, encode_msg(&notify)).await
         }
         cmd if cmd == h.set_avatar_path_cs_req => {
             let rsp = avatar::on_set_avatar_path(state, &pkt.body);
@@ -328,6 +362,7 @@ fn build_cmd_table() -> CmdTable {
         get_cur_lineup_data_sc_rsp: cmd_id(&name_to_id, "GetCurLineupDataScRsp"),
         change_lineup_leader_cs_req: cmd_id(&name_to_id, "ChangeLineupLeaderCsReq"),
         change_lineup_leader_sc_rsp: cmd_id(&name_to_id, "ChangeLineupLeaderScRsp"),
+        sync_lineup_notify: cmd_id(&name_to_id, "SyncLineupNotify"),
         get_cur_scene_info_cs_req: cmd_id(&name_to_id, "GetCurSceneInfoCsReq"),
         get_cur_scene_info_sc_rsp: cmd_id(&name_to_id, "GetCurSceneInfoScRsp"),
         get_mission_status_cs_req: cmd_id(&name_to_id, "GetMissionStatusCsReq"),
@@ -338,6 +373,12 @@ fn build_cmd_table() -> CmdTable {
         start_cocoon_stage_sc_rsp: cmd_id(&name_to_id, "StartCocoonStageScRsp"),
         pve_battle_result_cs_req: cmd_id(&name_to_id, "PVEBattleResultCsReq"),
         pve_battle_result_sc_rsp: cmd_id(&name_to_id, "PVEBattleResultScRsp"),
+        scene_cast_skill_cs_req: cmd_id(&name_to_id, "SceneCastSkillCsReq"),
+        scene_cast_skill_sc_rsp: cmd_id(&name_to_id, "SceneCastSkillScRsp"),
+        scene_cast_skill_cost_mp_cs_req: cmd_id(&name_to_id, "SceneCastSkillCostMpCsReq"),
+        scene_cast_skill_cost_mp_sc_rsp: cmd_id(&name_to_id, "SceneCastSkillCostMpScRsp"),
+        sync_client_res_version_cs_req: cmd_id(&name_to_id, "SyncClientResVersionCsReq"),
+        sync_client_res_version_sc_rsp: cmd_id(&name_to_id, "SyncClientResVersionScRsp"),
         get_bag_cs_req: cmd_id(&name_to_id, "GetBagCsReq"),
         get_bag_sc_rsp: cmd_id(&name_to_id, "GetBagScRsp"),
         player_logout_cs_req: cmd_id(&name_to_id, "PlayerLogoutCsReq"),
@@ -372,6 +413,9 @@ fn build_cmd_table() -> CmdTable {
         handled.content_package_get_data_cs_req,
         handled.start_cocoon_stage_cs_req,
         handled.pve_battle_result_cs_req,
+        handled.scene_cast_skill_cs_req,
+        handled.scene_cast_skill_cost_mp_cs_req,
+        handled.sync_client_res_version_cs_req,
         handled.get_bag_cs_req,
         handled.player_logout_cs_req,
         handled.set_client_paused_cs_req,
@@ -417,11 +461,37 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
+fn persist_runtime(state: &GameServerState) -> io::Result<()> {
+    let (mc_id, march_id, lineup) = {
+        let guard = state.runtime.read().expect("runtime read");
+        (
+            guard.mc_id,
+            guard.march_id,
+            guard.lineup.clone(),
+        )
+    };
+
+    let payload = json!({
+        "avatar": {
+            "mc_id": mc_id.to_string(),
+            "march_id": march_id.to_string(),
+            "lineup": lineup,
+        }
+    });
+
+    let data = serde_json::to_string_pretty(&payload)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("serialize persistent: {e}")))?;
+    std::fs::write("persistent.json", data)
+}
+
 fn lineup_avatar_infos(state: &GameServerState) -> Vec<proto::LineupAvatar> {
-    let lineup = {
+    let mut lineup = {
         let guard = state.runtime.read().expect("runtime read");
         guard.lineup.clone()
     };
+    if lineup.len() > 4 {
+        lineup.truncate(4);
+    }
     lineup
         .into_iter()
         .enumerate()
