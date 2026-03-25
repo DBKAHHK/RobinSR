@@ -41,6 +41,12 @@ struct HandledCmds {
     get_cur_scene_info_sc_rsp: u16,
     get_mission_status_cs_req: u16,
     get_mission_status_sc_rsp: u16,
+    set_client_paused_cs_req: u16,
+    set_client_paused_sc_rsp: u16,
+    replace_lineup_cs_req: u16,
+    replace_lineup_sc_rsp: u16,
+    set_avatar_path_cs_req: u16,
+    set_avatar_path_sc_rsp: u16,
     player_login_finish_cs_req: u16,
     player_login_finish_sc_rsp: u16,
 }
@@ -53,16 +59,38 @@ struct CmdTable {
 }
 
 #[derive(Clone)]
+struct RuntimeState {
+    mc_id: u32,
+    march_id: u32,
+    lineup: Vec<u32>,
+    leader_slot: u32,
+    client_paused: bool,
+}
+
+#[derive(Clone)]
 struct GameServerState {
     data: Arc<GameData>,
     cmd: Arc<CmdTable>,
+    runtime: Arc<std::sync::RwLock<RuntimeState>>,
 }
 
 pub async fn start(data: Arc<GameData>) -> io::Result<()> {
     let cmd = Arc::new(build_cmd_table());
+    let runtime = Arc::new(std::sync::RwLock::new(RuntimeState {
+        mc_id: data.mc_id,
+        march_id: data.march_id,
+        lineup: if data.lineup.is_empty() {
+            data.avatars.iter().map(|a| a.avatar_id).take(4).collect()
+        } else {
+            data.lineup.clone()
+        },
+        leader_slot: 0,
+        client_paused: false,
+    }));
     let state = GameServerState {
         data,
         cmd,
+        runtime,
     };
 
     let listener = TcpListener::bind((GAME_HOST, GAME_PORT)).await?;
@@ -130,7 +158,7 @@ async fn handle_packet(state: &GameServerState, conn: &mut Connection, pkt: Pack
             conn.send_raw(h.get_cur_lineup_data_sc_rsp, &encode_msg(&rsp)).await
         }
         cmd if cmd == h.change_lineup_leader_cs_req => {
-            let rsp = lineup::on_change_lineup_leader(&pkt.body);
+            let rsp = lineup::on_change_lineup_leader(state, &pkt.body);
             conn.send_raw(h.change_lineup_leader_sc_rsp, &encode_msg(&rsp)).await
         }
         cmd if cmd == h.get_cur_scene_info_cs_req => {
@@ -140,6 +168,18 @@ async fn handle_packet(state: &GameServerState, conn: &mut Connection, pkt: Pack
         cmd if cmd == h.get_mission_status_cs_req => {
             let rsp = mission::on_get_mission_status(&pkt.body);
             conn.send_raw(h.get_mission_status_sc_rsp, &encode_msg(&rsp)).await
+        }
+        cmd if cmd == h.set_client_paused_cs_req => {
+            let rsp = player::on_set_client_paused(state, &pkt.body);
+            conn.send_raw(h.set_client_paused_sc_rsp, &encode_msg(&rsp)).await
+        }
+        cmd if cmd == h.replace_lineup_cs_req => {
+            let rsp = lineup::on_replace_lineup(state, &pkt.body);
+            conn.send_raw(h.replace_lineup_sc_rsp, &encode_msg(&rsp)).await
+        }
+        cmd if cmd == h.set_avatar_path_cs_req => {
+            let rsp = avatar::on_set_avatar_path(state, &pkt.body);
+            conn.send_raw(h.set_avatar_path_sc_rsp, &encode_msg(&rsp)).await
         }
         cmd if cmd == h.player_login_finish_cs_req => {
             let rsp = PlayerLoginFinishScRsp { retcode: 0 };
@@ -223,6 +263,12 @@ fn build_cmd_table() -> CmdTable {
         get_cur_scene_info_sc_rsp: cmd_id(&name_to_id, "GetCurSceneInfoScRsp"),
         get_mission_status_cs_req: cmd_id(&name_to_id, "GetMissionStatusCsReq"),
         get_mission_status_sc_rsp: cmd_id(&name_to_id, "GetMissionStatusScRsp"),
+        set_client_paused_cs_req: cmd_id(&name_to_id, "SetClientPausedCsReq"),
+        set_client_paused_sc_rsp: cmd_id(&name_to_id, "SetClientPausedScRsp"),
+        replace_lineup_cs_req: cmd_id(&name_to_id, "ReplaceLineupCsReq"),
+        replace_lineup_sc_rsp: cmd_id(&name_to_id, "ReplaceLineupScRsp"),
+        set_avatar_path_cs_req: cmd_id(&name_to_id, "SetAvatarPathCsReq"),
+        set_avatar_path_sc_rsp: cmd_id(&name_to_id, "SetAvatarPathScRsp"),
         player_login_finish_cs_req: cmd_id(&name_to_id, "PlayerLoginFinishCsReq"),
         player_login_finish_sc_rsp: cmd_id(&name_to_id, "PlayerLoginFinishScRsp"),
     };
@@ -240,6 +286,9 @@ fn build_cmd_table() -> CmdTable {
         handled.change_lineup_leader_cs_req,
         handled.get_cur_scene_info_cs_req,
         handled.get_mission_status_cs_req,
+        handled.set_client_paused_cs_req,
+        handled.replace_lineup_cs_req,
+        handled.set_avatar_path_cs_req,
         handled.player_login_finish_cs_req,
     ] {
         dummy_map.remove(&handled);
@@ -285,15 +334,12 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
-fn default_lineup(data: &GameData) -> Vec<u32> {
-    if !data.lineup.is_empty() {
-        return data.lineup.clone();
-    }
-    data.avatars.iter().map(|a| a.avatar_id).take(4).collect()
-}
-
-fn lineup_avatar_infos(data: &GameData) -> Vec<proto::LineupAvatar> {
-    default_lineup(data)
+fn lineup_avatar_infos(state: &GameServerState) -> Vec<proto::LineupAvatar> {
+    let lineup = {
+        let guard = state.runtime.read().expect("runtime read");
+        guard.lineup.clone()
+    };
+    lineup
         .into_iter()
         .enumerate()
         .map(|(idx, avatar_id)| proto::LineupAvatar {

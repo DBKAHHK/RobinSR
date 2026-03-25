@@ -1,4 +1,6 @@
-use crate::proto::{Avatar, AvatarPathData, AvatarPathSkillTree, GetAvatarDataScRsp};
+use prost::Message;
+
+use crate::proto::{Avatar, AvatarPathData, AvatarPathSkillTree, GetAvatarDataScRsp, SetAvatarPathCsReq, SetAvatarPathScRsp};
 
 use super::{now_ms, GameServerState};
 
@@ -50,12 +52,35 @@ pub fn on_get_avatar_data(state: &GameServerState) -> GetAvatarDataScRsp {
     }
 }
 
+pub fn on_set_avatar_path(state: &GameServerState, body: &[u8]) -> SetAvatarPathScRsp {
+    let req = SetAvatarPathCsReq::decode(body).unwrap_or_default();
+    let avatar_id = req.avatar_id as u32;
+
+    if let Ok(mut guard) = state.runtime.write() {
+        if is_trailblazer_avatar(avatar_id) {
+            guard.mc_id = avatar_id;
+        } else if is_march_avatar(avatar_id) {
+            guard.march_id = avatar_id;
+        }
+    }
+
+    SetAvatarPathScRsp {
+        retcode: 0,
+        avatar_id: req.avatar_id,
+        ..Default::default()
+    }
+}
+
 fn resolve_multi_path_avatar_type(state: &GameServerState, avatar_id: u32) -> u32 {
+    let (mc_id, march_id) = {
+        let guard = state.runtime.read().expect("runtime read");
+        (guard.mc_id, guard.march_id)
+    };
     if is_trailblazer_avatar(avatar_id) {
-        return state.data.mc_id;
+        return mc_id;
     }
     if is_march_avatar(avatar_id) {
-        return state.data.march_id;
+        return march_id;
     }
     avatar_id
 }

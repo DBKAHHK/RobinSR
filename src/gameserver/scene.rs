@@ -7,7 +7,14 @@ use super::GameServerState;
 
 pub fn on_get_cur_scene_info(state: &GameServerState) -> GetCurSceneInfoScRsp {
     let entity_id = (state.data.uid << 3) + 1;
-    let leader_avatar = state.data.mc_id;
+    let leader_avatar = {
+        let guard = state.runtime.read().expect("runtime read");
+        guard
+            .lineup
+            .get(guard.leader_slot as usize)
+            .copied()
+            .unwrap_or(guard.mc_id)
+    };
 
     GetCurSceneInfoScRsp {
         scene: Some(SceneInfo {
