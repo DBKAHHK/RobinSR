@@ -18,7 +18,7 @@ fn build_lineup(state: &GameServerState) -> LineupInfo {
         is_virtual: false,
         plane_id: 20313,
         name: "Robin Team".to_string(),
-        mp: 0,
+        mp: 5,
         max_mp: 5,
         index: 0,
         extra_lineup_type: ExtraLineupType::LineupNone as i32,

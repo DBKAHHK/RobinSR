@@ -7,6 +7,7 @@ use crate::{data::GameData, packet::{Connection, Packet}, proto::{self, PlayerLo
 
 mod avatar;
 mod battle;
+mod item;
 mod lineup;
 mod mission;
 mod player;
@@ -41,6 +42,15 @@ struct HandledCmds {
     get_cur_scene_info_sc_rsp: u16,
     get_mission_status_cs_req: u16,
     get_mission_status_sc_rsp: u16,
+    content_package_get_data_cs_req: u16,
+    content_package_get_data_sc_rsp: u16,
+    start_cocoon_stage_cs_req: u16,
+    start_cocoon_stage_sc_rsp: u16,
+    pve_battle_result_cs_req: u16,
+    pve_battle_result_sc_rsp: u16,
+    get_bag_cs_req: u16,
+    get_bag_sc_rsp: u16,
+    player_logout_cs_req: u16,
     set_client_paused_cs_req: u16,
     set_client_paused_sc_rsp: u16,
     replace_lineup_cs_req: u16,
@@ -119,74 +129,96 @@ pub async fn start(data: Arc<GameData>) -> io::Result<()> {
 }
 
 async fn handle_packet(state: &GameServerState, conn: &mut Connection, pkt: Packet) -> io::Result<()> {
+    log_packet("RX", state, pkt.cmd, &pkt.head, &pkt.body);
     let h = &state.cmd.handled;
     match pkt.cmd {
         cmd if cmd == h.player_get_token_cs_req => {
             let rsp = player::on_player_get_token(state);
-            conn.send_raw(h.player_get_token_sc_rsp, &encode_msg(&rsp)).await
+            send_logged(state, conn, h.player_get_token_sc_rsp, encode_msg(&rsp)).await
         }
         cmd if cmd == h.player_heart_beat_cs_req => {
             let rsp = player::on_player_heart_beat(&pkt.body);
-            conn.send_raw(h.player_heart_beat_sc_rsp, &encode_msg(&rsp)).await
+            send_logged(state, conn, h.player_heart_beat_sc_rsp, encode_msg(&rsp)).await
         }
         cmd if cmd == h.player_login_cs_req => {
-            let rsp = player::on_player_login(state);
-            conn.send_raw(h.player_login_sc_rsp, &encode_msg(&rsp)).await
+            let rsp = player::on_player_login(state, &pkt.body);
+            send_logged(state, conn, h.player_login_sc_rsp, encode_msg(&rsp)).await
         }
         cmd if cmd == h.get_basic_info_cs_req => {
             let rsp = player::on_get_basic_info();
-            conn.send_raw(h.get_basic_info_sc_rsp, &encode_msg(&rsp)).await
+            send_logged(state, conn, h.get_basic_info_sc_rsp, encode_msg(&rsp)).await
         }
         cmd if cmd == h.get_player_board_data_cs_req => {
             let rsp = player::on_get_player_board_data(state);
-            conn.send_raw(h.get_player_board_data_sc_rsp, &encode_msg(&rsp)).await
+            send_logged(state, conn, h.get_player_board_data_sc_rsp, encode_msg(&rsp)).await
         }
         cmd if cmd == h.get_avatar_data_cs_req => {
-            let rsp = avatar::on_get_avatar_data(state);
-            conn.send_raw(h.get_avatar_data_sc_rsp, &encode_msg(&rsp)).await
+            let rsp = avatar::on_get_avatar_data(state, &pkt.body);
+            send_logged(state, conn, h.get_avatar_data_sc_rsp, encode_msg(&rsp)).await
         }
         cmd if cmd == h.get_cur_battle_info_cs_req => {
             let rsp = battle::on_get_cur_battle_info();
-            conn.send_raw(h.get_cur_battle_info_sc_rsp, &encode_msg(&rsp)).await
+            send_logged(state, conn, h.get_cur_battle_info_sc_rsp, encode_msg(&rsp)).await
         }
         cmd if cmd == h.get_all_lineup_data_cs_req => {
             let rsp = lineup::on_get_all_lineup_data(state);
-            conn.send_raw(h.get_all_lineup_data_sc_rsp, &encode_msg(&rsp)).await
+            send_logged(state, conn, h.get_all_lineup_data_sc_rsp, encode_msg(&rsp)).await
         }
         cmd if cmd == h.get_cur_lineup_data_cs_req => {
             let rsp = lineup::on_get_cur_lineup_data(state);
-            conn.send_raw(h.get_cur_lineup_data_sc_rsp, &encode_msg(&rsp)).await
+            send_logged(state, conn, h.get_cur_lineup_data_sc_rsp, encode_msg(&rsp)).await
         }
         cmd if cmd == h.change_lineup_leader_cs_req => {
             let rsp = lineup::on_change_lineup_leader(state, &pkt.body);
-            conn.send_raw(h.change_lineup_leader_sc_rsp, &encode_msg(&rsp)).await
+            send_logged(state, conn, h.change_lineup_leader_sc_rsp, encode_msg(&rsp)).await
         }
         cmd if cmd == h.get_cur_scene_info_cs_req => {
             let rsp = scene::on_get_cur_scene_info(state);
-            conn.send_raw(h.get_cur_scene_info_sc_rsp, &encode_msg(&rsp)).await
+            send_logged(state, conn, h.get_cur_scene_info_sc_rsp, encode_msg(&rsp)).await
         }
         cmd if cmd == h.get_mission_status_cs_req => {
             let rsp = mission::on_get_mission_status(&pkt.body);
-            conn.send_raw(h.get_mission_status_sc_rsp, &encode_msg(&rsp)).await
+            send_logged(state, conn, h.get_mission_status_sc_rsp, encode_msg(&rsp)).await
+        }
+        cmd if cmd == h.content_package_get_data_cs_req => {
+            let rsp = player::on_content_package_get_data();
+            send_logged(state, conn, h.content_package_get_data_sc_rsp, encode_msg(&rsp)).await
+        }
+        cmd if cmd == h.start_cocoon_stage_cs_req => {
+            let rsp = battle::on_start_cocoon_stage(&pkt.body);
+            send_logged(state, conn, h.start_cocoon_stage_sc_rsp, encode_msg(&rsp)).await
+        }
+        cmd if cmd == h.pve_battle_result_cs_req => {
+            let rsp = battle::on_pve_battle_result(&pkt.body);
+            send_logged(state, conn, h.pve_battle_result_sc_rsp, encode_msg(&rsp)).await
+        }
+        cmd if cmd == h.get_bag_cs_req => {
+            let rsp = item::on_get_bag(state);
+            send_logged(state, conn, h.get_bag_sc_rsp, encode_msg(&rsp)).await
+        }
+        cmd if cmd == h.player_logout_cs_req => {
+            conn.close().await?;
+            Err(io::Error::new(io::ErrorKind::ConnectionAborted, "player logout"))
         }
         cmd if cmd == h.set_client_paused_cs_req => {
             let rsp = player::on_set_client_paused(state, &pkt.body);
-            conn.send_raw(h.set_client_paused_sc_rsp, &encode_msg(&rsp)).await
+            send_logged(state, conn, h.set_client_paused_sc_rsp, encode_msg(&rsp)).await
         }
         cmd if cmd == h.replace_lineup_cs_req => {
             let rsp = lineup::on_replace_lineup(state, &pkt.body);
-            conn.send_raw(h.replace_lineup_sc_rsp, &encode_msg(&rsp)).await
+            send_logged(state, conn, h.replace_lineup_sc_rsp, encode_msg(&rsp)).await
         }
         cmd if cmd == h.set_avatar_path_cs_req => {
             let rsp = avatar::on_set_avatar_path(state, &pkt.body);
-            conn.send_raw(h.set_avatar_path_sc_rsp, &encode_msg(&rsp)).await
+            send_logged(state, conn, h.set_avatar_path_sc_rsp, encode_msg(&rsp)).await
         }
         cmd if cmd == h.player_login_finish_cs_req => {
             let rsp = PlayerLoginFinishScRsp { retcode: 0 };
-            conn.send_raw(h.player_login_finish_sc_rsp, &encode_msg(&rsp)).await
+            send_logged(state, conn, h.player_login_finish_sc_rsp, encode_msg(&rsp)).await
         }
         _ => {
             if let Some(rsp_cmd) = state.cmd.dummy_map.get(&pkt.cmd) {
+                log_packet("TX", state, *rsp_cmd, &[], &[]);
                 conn.send_empty(*rsp_cmd).await
             } else {
                 let name = state
@@ -205,6 +237,43 @@ fn encode_msg<M: Message>(msg: &M) -> Vec<u8> {
     let mut buf = Vec::new();
     msg.encode(&mut buf).expect("encode message");
     buf
+}
+
+async fn send_logged(
+    state: &GameServerState,
+    conn: &mut Connection,
+    cmd: u16,
+    body: Vec<u8>,
+) -> io::Result<()> {
+    log_packet("TX", state, cmd, &[], &body);
+    conn.send_raw(cmd, &body).await
+}
+
+fn log_packet(direction: &str, state: &GameServerState, cmd: u16, head: &[u8], body: &[u8]) {
+    let name = state
+        .cmd
+        .name_by_id
+        .get(&cmd)
+        .map_or("UNKNOWN", String::as_str);
+    println!(
+        "[{direction}] cmd={cmd} ({name}) head_len={} body_len={} body_hex={}",
+        head.len(),
+        body.len(),
+        hex_encode(body),
+    );
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    if bytes.is_empty() {
+        return String::new();
+    }
+
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        use std::fmt::Write as _;
+        let _ = write!(&mut out, "{b:02x}");
+    }
+    out
 }
 
 fn build_cmd_table() -> CmdTable {
@@ -263,6 +332,15 @@ fn build_cmd_table() -> CmdTable {
         get_cur_scene_info_sc_rsp: cmd_id(&name_to_id, "GetCurSceneInfoScRsp"),
         get_mission_status_cs_req: cmd_id(&name_to_id, "GetMissionStatusCsReq"),
         get_mission_status_sc_rsp: cmd_id(&name_to_id, "GetMissionStatusScRsp"),
+        content_package_get_data_cs_req: cmd_id(&name_to_id, "ContentPackageGetDataCsReq"),
+        content_package_get_data_sc_rsp: cmd_id(&name_to_id, "ContentPackageGetDataScRsp"),
+        start_cocoon_stage_cs_req: cmd_id(&name_to_id, "StartCocoonStageCsReq"),
+        start_cocoon_stage_sc_rsp: cmd_id(&name_to_id, "StartCocoonStageScRsp"),
+        pve_battle_result_cs_req: cmd_id(&name_to_id, "PVEBattleResultCsReq"),
+        pve_battle_result_sc_rsp: cmd_id(&name_to_id, "PVEBattleResultScRsp"),
+        get_bag_cs_req: cmd_id(&name_to_id, "GetBagCsReq"),
+        get_bag_sc_rsp: cmd_id(&name_to_id, "GetBagScRsp"),
+        player_logout_cs_req: cmd_id(&name_to_id, "PlayerLogoutCsReq"),
         set_client_paused_cs_req: cmd_id(&name_to_id, "SetClientPausedCsReq"),
         set_client_paused_sc_rsp: cmd_id(&name_to_id, "SetClientPausedScRsp"),
         replace_lineup_cs_req: cmd_id(&name_to_id, "ReplaceLineupCsReq"),
@@ -272,6 +350,11 @@ fn build_cmd_table() -> CmdTable {
         player_login_finish_cs_req: cmd_id(&name_to_id, "PlayerLoginFinishCsReq"),
         player_login_finish_sc_rsp: cmd_id(&name_to_id, "PlayerLoginFinishScRsp"),
     };
+
+    let name_by_id = name_to_id
+        .iter()
+        .map(|(name, id)| (*id, name.clone()))
+        .collect();
 
     for handled in [
         handled.player_get_token_cs_req,
@@ -286,6 +369,11 @@ fn build_cmd_table() -> CmdTable {
         handled.change_lineup_leader_cs_req,
         handled.get_cur_scene_info_cs_req,
         handled.get_mission_status_cs_req,
+        handled.content_package_get_data_cs_req,
+        handled.start_cocoon_stage_cs_req,
+        handled.pve_battle_result_cs_req,
+        handled.get_bag_cs_req,
+        handled.player_logout_cs_req,
         handled.set_client_paused_cs_req,
         handled.replace_lineup_cs_req,
         handled.set_avatar_path_cs_req,
@@ -293,11 +381,6 @@ fn build_cmd_table() -> CmdTable {
     ] {
         dummy_map.remove(&handled);
     }
-
-    let name_by_id = name_to_id
-        .iter()
-        .map(|(name, id)| (*id, name.clone()))
-        .collect();
 
     CmdTable {
         handled,

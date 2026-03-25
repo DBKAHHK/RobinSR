@@ -82,4 +82,8 @@ impl Connection {
     pub async fn send_empty(&mut self, cmd: u16) -> io::Result<()> {
         self.send_raw(cmd, &[]).await
     }
+
+    pub async fn close(&mut self) -> io::Result<()> {
+        self.writer.shutdown().await
+    }
 }
